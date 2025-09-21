@@ -1,40 +1,60 @@
+# syntax=docker/dockerfile:1.7
 ############################
 # Docker build environment #
 ############################
 
-FROM node:22.11.0-bookworm-slim AS build
+FROM node:22.19-bookworm-slim AS build
 
 # Upgrade all packages and install dependencies
-RUN apt-get update \
-    && apt-get upgrade -y
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        python3 \
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         build-essential \
+        ca-certificates \
         cmake \
         curl \
-        ca-certificates \
-    && apt clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+        python3 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 WORKDIR /build
-
+# Install dependencies first to leverage Docker layer caching
+COPY package*.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+# Now copy the rest of the source
 COPY . .
-
-# Build Public Pool using NPM
-RUN npm i && npm run build
+# Build
+RUN npm run build
+RUN npm prune --omit=dev
 
 ############################
 # Docker final environment #
 ############################
 
-FROM node:22.11.0-bookworm-slim
+FROM node:22.19-bookworm-slim
+LABEL org.opencontainers.image.title="public-pool-api" \
+      org.opencontainers.image.description="Public Pool Backend" \
+      org.opencontainers.image.source="https://github.com/benjamin-wilson/public-pool" \
+      org.opencontainers.image.licenses="GPL-3.0"
 
-# Expose ports for Stratum and Bitcoin RPC
-EXPOSE 3333 3334 8332
+ENV NODE_ENV=production
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# Expose ports for Stratum & API
+EXPOSE 3333 3334
 
 WORKDIR /public-pool
 
-# Copy built binaries into the final image
-COPY --from=build /build .
-#COPY .env.example .env
+# Copy only what the runtime needs
+COPY --from=build --chown=node:node /build/dist ./dist
+COPY --from=build --chown=node:node /build/node_modules ./node_modules
+COPY --from=build --chown=node:node /build/package*.json ./
 
-CMD ["/usr/local/bin/node", "dist/main"]
+USER node
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=30s --timeout=4s --start-period=40s --retries=3 \
+  CMD ["curl","--fail","--silent","--show-error","--connect-timeout","2","--max-time","3","http://127.0.0.1:3334/api/info"]
+
+CMD ["node", "dist/main"]
