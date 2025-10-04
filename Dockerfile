@@ -54,7 +54,4 @@ COPY --from=build --chown=node:node /build/package*.json ./
 USER node
 STOPSIGNAL SIGTERM
 
-HEALTHCHECK --interval=30s --timeout=4s --start-period=40s --retries=3 \
-  CMD ["curl","--fail","--silent","--show-error","--connect-timeout","2","--max-time","3","http://127.0.0.1:3334/api/info"]
-
 CMD ["node", "dist/main"]
